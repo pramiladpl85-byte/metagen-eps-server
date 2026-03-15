@@ -19,17 +19,15 @@ if (!fs.existsSync(uploadDir)) {
 
 const upload = multer({ dest: 'uploads/' });
 
-// ১. EPS প্রিভিউ জেনারেট করার API (Ghostscript দিয়ে)
+// ১. EPS প্রিভিউ জেনারেট করার API
 app.post('/api/extract-eps', upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
-    // Multer এক্সটেনশন ছাড়া ফাইল সেভ করে, তাই আমরা ফাইলের শেষে .eps যুক্ত করে নিচ্ছি
     const epsFilePath = req.file.path + '.eps';
     fs.renameSync(req.file.path, epsFilePath);
     
     const jpgFilePath = `${epsFilePath}.jpg`;
 
-    // Ghostscript কমান্ড (অপ্টিমাইজড)
     const cmd = `gs -q -dSAFER -dBATCH -dNOPAUSE -dEPSCrop -r100 -sDEVICE=jpeg -dJPEGQ=80 -dTextAlphaBits=4 -dGraphicsAlphaBits=4 -sOutputFile="${jpgFilePath}" "${epsFilePath}"`;
 
     exec(cmd, (error, stdout, stderr) => {
@@ -42,10 +40,8 @@ app.post('/api/extract-eps', upload.single('file'), (req, res) => {
 
         try {
             const jpegBuffer = fs.readFileSync(jpgFilePath);
-            
             fs.unlinkSync(epsFilePath);
             fs.unlinkSync(jpgFilePath);
-            
             res.json({ success: true, mimeType: "image/jpeg", base64: jpegBuffer.toString('base64') });
         } catch (err) {
             if (fs.existsSync(epsFilePath)) fs.unlinkSync(epsFilePath);
@@ -55,7 +51,7 @@ app.post('/api/extract-eps', upload.single('file'), (req, res) => {
     });
 });
 
-// ২. EPS ফাইলে মেটাডেটা এম্বেড করার API (ExifTool দিয়ে)
+// ২. EPS ফাইলে মেটাডেটা এম্বেড করার API (Advanced XMP Injection)
 app.post('/api/embed-eps', upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
@@ -64,47 +60,72 @@ app.post('/api/embed-eps', upload.single('file'), (req, res) => {
     
     const { title, description, keywords } = req.body;
 
-    // ExifTool কমান্ড: Adobe Illustrator এবং Stock সাইট (Shutterstock/Adobe) এর জন্য সঠিক ট্যাগ ও এনকোডিং
+    // XMP ডেটা তৈরি করা
+    const safeTitle = (title || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const safeDesc = (description || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const keywordsArray = (keywords || '').split(',').map(k => k.trim()).filter(Boolean);
+    const keywordsList = keywordsArray.map(k => `<rdf:li>${k.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')}</rdf:li>`).join('\n     ');
+
+    const xmpData = `<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Adobe XMP Core 5.6">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
+    xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/">
+   <dc:title>
+    <rdf:Alt>
+     <rdf:li xml:lang="x-default">${safeTitle}</rdf:li>
+    </rdf:Alt>
+   </dc:title>
+   <dc:description>
+    <rdf:Alt>
+     <rdf:li xml:lang="x-default">${safeDesc}</rdf:li>
+    </rdf:Alt>
+   </dc:description>
+   <dc:subject>
+    <rdf:Bag>
+     ${keywordsList}
+    </rdf:Bag>
+   </dc:subject>
+   <photoshop:Headline>${safeTitle}</photoshop:Headline>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>`;
+
+    const xmpFilePath = req.file.path + '.xmp';
+    fs.writeFileSync(xmpFilePath, xmpData, 'utf8');
+
+    // ExifTool কমান্ড: XMP ফাইল থেকে ডাইরেক্ট ইনজেক্ট করা হবে
     const args =[
         '-overwrite_original',
         '-charset', 'utf8',
         '-charset', 'iptc=utf8',
-        '-codedcharacterset=utf8'
+        '-codedcharacterset=utf8',
+        `-xmp<=${xmpFilePath}` // Inject Full XMP Block
     ];
 
-    // Document Title
-    if (title) {
-        args.push(`-XMP-dc:Title=${title}`);
-        args.push(`-ObjectName=${title}`); // IPTC Standard Title
-    }
-
-    // Description
-    if (description) {
-        args.push(`-XMP-dc:Description=${description}`);
-        args.push(`-Caption-Abstract=${description}`); // IPTC Standard Description
-    }
-
-    // Keywords
-    if (keywords) {
-        // FIX: স্পেস পরিষ্কার করে জয়েন করা হচ্ছে, যাতে ExifTool সঠিকভাবে অ্যারে বানায়
-        const cleanKeywords = keywords.split(',').map(k => k.trim()).filter(Boolean).join(',');
-        args.push('-sep', ','); 
-        args.push(`-XMP-dc:Subject=${cleanKeywords}`); // XMP Keywords
-        args.push(`-Keywords=${cleanKeywords}`); // IPTC Keywords
+    // সাথে IPTC ট্যাগও যোগ করে দেওয়া হলো ব্যাকআপ হিসেবে
+    if (title) args.push(`-IPTC:ObjectName=${title}`);
+    if (description) args.push(`-IPTC:Caption-Abstract=${description}`);
+    if (keywordsArray.length > 0) {
+        args.push('-sep', ',');
+        args.push(`-IPTC:Keywords=${keywordsArray.join(',')}`);
     }
 
     args.push(epsFilePath);
 
     execFile('exiftool', args, (error, stdout, stderr) => {
+        if (fs.existsSync(xmpFilePath)) fs.unlinkSync(xmpFilePath); // xmp ডিলিট
+        
         if (error) {
             console.error("ExifTool Error:", stderr || error.message);
             if (fs.existsSync(epsFilePath)) fs.unlinkSync(epsFilePath);
             return res.status(500).json({ error: "Failed to embed metadata in EPS." });
         }
 
-        // ফ্রন্টএন্ডে ফাইল ডাউনলোড করতে পাঠানো
         res.download(epsFilePath, req.file.originalname, (err) => {
-            if (fs.existsSync(epsFilePath)) fs.unlinkSync(epsFilePath); // কাজ শেষে ডিলিট
+            if (fs.existsSync(epsFilePath)) fs.unlinkSync(epsFilePath); // কাজ শেষে eps ডিলিট
         });
     });
 });
