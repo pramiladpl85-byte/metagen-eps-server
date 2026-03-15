@@ -1,6 +1,6 @@
 FROM node:18-alpine
 
-# perl এবং exiftool নিশ্চিত করা হচ্ছে
+# Alpine এ exiftool চলার জন্য perl অবশ্যই লাগবে
 RUN apk add --no-cache ghostscript ghostscript-fonts exiftool perl
 
 WORKDIR /app
@@ -10,7 +10,7 @@ RUN npm install
 
 COPY . .
 
-# আপলোড ফোল্ডার তৈরি এবং পারমিশন
+# আপলোড ফোল্ডার তৈরি নিশ্চিত করা
 RUN mkdir -p uploads && chmod 777 uploads
 
 EXPOSE 3000
