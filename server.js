@@ -65,10 +65,21 @@ app.post('/api/embed-eps', upload.single('file'), (req, res) => {
     
     const { title, description, keywords } = req.body;
 
-    // ExifTool কমান্ড
-    const cmd = `exiftool -overwrite_original -Title="${title || ''}" -ObjectName="${title || ''}" -Description="${description || ''}" -sep ", " -Keywords="${keywords || ''}" -Subject="${keywords || ''}" "${epsFilePath}"`;
+    // ExifTool এর আর্গুমেন্টগুলো Array হিসেবে দেওয়া হলো (যাতে Special Characters বা Quotes সমস্যা না করে)
+    const args =[
+        '-overwrite_original',
+        `-Title=${title || ''}`,
+        `-ObjectName=${title || ''}`,
+        `-Description=${description || ''}`,
+        '-sep', ', ',
+        `-Keywords=${keywords || ''}`,
+        `-Subject=${keywords || ''}`,
+        epsFilePath
+    ];
 
-    exec(cmd, (error, stdout, stderr) => {
+    const { execFile } = require('child_process');
+
+    execFile('exiftool', args, (error, stdout, stderr) => {
         if (error) {
             console.error("ExifTool Error:", stderr || error.message);
             if (fs.existsSync(epsFilePath)) fs.unlinkSync(epsFilePath);
@@ -80,9 +91,4 @@ app.post('/api/embed-eps', upload.single('file'), (req, res) => {
             if (fs.existsSync(epsFilePath)) fs.unlinkSync(epsFilePath); // কাজ শেষে ডিলিট
         });
     });
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
 });
