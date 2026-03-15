@@ -12,4 +12,5 @@ COPY . .
 
 EXPOSE 3000
 
-CMD["node", "server.js"]
+# এখানে CMD এর পরে একটি স্পেস দিতে হবে
+CMD ["node", "server.js"]
