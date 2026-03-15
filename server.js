@@ -1,6 +1,6 @@
 const express = require('express');
 const multer = require('multer');
-const { exec } = require('child_process');
+const { exec, execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const cors = require('cors');
@@ -65,7 +65,7 @@ app.post('/api/embed-eps', upload.single('file'), (req, res) => {
     
     const { title, description, keywords } = req.body;
 
-    // ExifTool এর আর্গুমেন্টগুলো Array হিসেবে দেওয়া হলো (যাতে Special Characters বা Quotes সমস্যা না করে)
+    // ExifTool কমান্ড: XMP এবং IPTC উভয় ফরম্যাটেই ডেটা এম্বেড করা হচ্ছে
     const args =[
         '-overwrite_original',
         `-XMP-dc:Title=${title || ''}`,
@@ -77,8 +77,6 @@ app.post('/api/embed-eps', upload.single('file'), (req, res) => {
         `-IPTC:Keywords=${keywords || ''}`,
         epsFilePath
     ];
-
-    const { execFile } = require('child_process');
 
     execFile('exiftool', args, (error, stdout, stderr) => {
         if (error) {
@@ -92,4 +90,9 @@ app.post('/api/embed-eps', upload.single('file'), (req, res) => {
             if (fs.existsSync(epsFilePath)) fs.unlinkSync(epsFilePath); // কাজ শেষে ডিলিট
         });
     });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
 });
