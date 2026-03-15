@@ -68,12 +68,13 @@ app.post('/api/embed-eps', upload.single('file'), (req, res) => {
     // ExifTool এর আর্গুমেন্টগুলো Array হিসেবে দেওয়া হলো (যাতে Special Characters বা Quotes সমস্যা না করে)
     const args =[
         '-overwrite_original',
-        `-Title=${title || ''}`,
-        `-ObjectName=${title || ''}`,
-        `-Description=${description || ''}`,
+        `-XMP-dc:Title=${title || ''}`,
+        `-XMP-dc:Description=${description || ''}`,
         '-sep', ', ',
-        `-Keywords=${keywords || ''}`,
-        `-Subject=${keywords || ''}`,
+        `-XMP-dc:Subject=${keywords || ''}`,
+        `-IPTC:ObjectName=${title || ''}`,
+        `-IPTC:Caption-Abstract=${description || ''}`,
+        `-IPTC:Keywords=${keywords || ''}`,
         epsFilePath
     ];
 
