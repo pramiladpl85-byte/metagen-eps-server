@@ -64,30 +64,33 @@ app.post('/api/embed-eps', upload.single('file'), (req, res) => {
     
     const { title, description, keywords } = req.body;
 
-    // ExifTool কমান্ড: Adobe Illustrator-এর জন্য সঠিক ট্যাগ ও এনকোডিং
+    // ExifTool কমান্ড: Adobe Illustrator এবং Stock সাইট (Shutterstock/Adobe) এর জন্য সঠিক ট্যাগ ও এনকোডিং
     const args =[
         '-overwrite_original',
-        '-charset', 'utf8' // স্পেশাল ক্যারেক্টার ঠিক রাখার জন্য
+        '-charset', 'utf8',
+        '-charset', 'iptc=utf8',
+        '-codedcharacterset=utf8'
     ];
 
     // Document Title
     if (title) {
         args.push(`-XMP-dc:Title=${title}`);
-        args.push(`-XMP-photoshop:Headline=${title}`);
-        args.push(`-IPTC:ObjectName=${title}`);
+        args.push(`-ObjectName=${title}`); // IPTC Standard Title
     }
 
     // Description
     if (description) {
         args.push(`-XMP-dc:Description=${description}`);
-        args.push(`-IPTC:Caption-Abstract=${description}`);
+        args.push(`-Caption-Abstract=${description}`); // IPTC Standard Description
     }
 
     // Keywords
     if (keywords) {
-        args.push('-sep', ','); // কমা দিয়ে কিওয়ার্ডগুলোকে আলাদা অ্যারে (List) হিসেবে সেট করার জন্য
-        args.push(`-XMP-dc:Subject=${keywords}`);
-        args.push(`-IPTC:Keywords=${keywords}`);
+        // FIX: স্পেস পরিষ্কার করে জয়েন করা হচ্ছে, যাতে ExifTool সঠিকভাবে অ্যারে বানায়
+        const cleanKeywords = keywords.split(',').map(k => k.trim()).filter(Boolean).join(',');
+        args.push('-sep', ','); 
+        args.push(`-XMP-dc:Subject=${cleanKeywords}`); // XMP Keywords
+        args.push(`-Keywords=${cleanKeywords}`); // IPTC Keywords
     }
 
     args.push(epsFilePath);
