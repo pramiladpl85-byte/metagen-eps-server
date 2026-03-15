@@ -1,7 +1,7 @@
 FROM node:18-alpine
 
-# সার্ভারে Ghostscript ইন্সটল করা
-RUN apk add --no-cache ghostscript
+# ExifTool এবং Ghostscript দুটোই ইন্সটল করা
+RUN apk add --no-cache ghostscript exiftool
 
 WORKDIR /app
 
