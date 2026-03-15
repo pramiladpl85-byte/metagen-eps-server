@@ -19,9 +19,7 @@ if (!fs.existsSync(uploadDir)) {
 
 const upload = multer({ dest: 'uploads/' });
 
-// ==========================================================
 // ১. EPS প্রিভিউ জেনারেট করার API (Ghostscript দিয়ে)
-// ==========================================================
 app.post('/api/extract-eps', upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
@@ -30,7 +28,6 @@ app.post('/api/extract-eps', upload.single('file'), (req, res) => {
     
     const jpgFilePath = `${epsFilePath}.jpg`;
 
-    // Ghostscript কমান্ড (অপ্টিমাইজড)
     const cmd = `gs -q -dSAFER -dBATCH -dNOPAUSE -dEPSCrop -r100 -sDEVICE=jpeg -dJPEGQ=80 -dTextAlphaBits=4 -dGraphicsAlphaBits=4 -sOutputFile="${jpgFilePath}" "${epsFilePath}"`;
 
     exec(cmd, (error, stdout, stderr) => {
@@ -43,11 +40,8 @@ app.post('/api/extract-eps', upload.single('file'), (req, res) => {
 
         try {
             const jpegBuffer = fs.readFileSync(jpgFilePath);
-            
-            // কাজ শেষে ফাইল ডিলিট
             fs.unlinkSync(epsFilePath);
             fs.unlinkSync(jpgFilePath);
-            
             res.json({ success: true, mimeType: "image/jpeg", base64: jpegBuffer.toString('base64') });
         } catch (err) {
             if (fs.existsSync(epsFilePath)) fs.unlinkSync(epsFilePath);
@@ -57,9 +51,7 @@ app.post('/api/extract-eps', upload.single('file'), (req, res) => {
     });
 });
 
-// ==========================================================
 // ২. EPS ফাইলে মেটাডেটা এম্বেড করার API (ExifTool দিয়ে)
-// ==========================================================
 app.post('/api/embed-eps', upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
@@ -68,26 +60,22 @@ app.post('/api/embed-eps', upload.single('file'), (req, res) => {
     
     const { title, description, keywords } = req.body;
 
-    // ExifTool কমান্ড: XMP এবং IPTC উভয় ফরম্যাটেই ডেটা এম্বেড করা হচ্ছে
     const args =[
         '-overwrite_original',
         '-charset', 'utf8',
         '-charset', 'iptc=utf8',
         '-codedcharacterset=utf8',
         
-        // --- Title Tags ---
         `-Title=${title || ''}`,
         `-XMP-dc:Title=${title || ''}`,
         `-XMP-photoshop:Headline=${title || ''}`,
         `-IPTC:ObjectName=${title || ''}`,
         
-        // --- Description Tags ---
         `-Description=${description || ''}`,
         `-XMP-dc:Description=${description || ''}`,
         `-IPTC:Caption-Abstract=${description || ''}`
     ];
 
-    // --- Keywords Tags ---
     if (keywords) {
         const cleanKeywords = keywords.split(',').map(k => k.trim()).filter(Boolean).join(',');
         args.push('-sep', ',');
@@ -105,16 +93,13 @@ app.post('/api/embed-eps', upload.single('file'), (req, res) => {
             return res.status(500).json({ error: "Failed to embed metadata in EPS." });
         }
 
-        // ফ্রন্টএন্ডে ফাইল ডাউনলোড করতে পাঠানো
         res.download(epsFilePath, req.file.originalname, (err) => {
-            if (fs.existsSync(epsFilePath)) fs.unlinkSync(epsFilePath); // কাজ শেষে ডিলিট
+            if (fs.existsSync(epsFilePath)) fs.unlinkSync(epsFilePath); 
         });
     });
 });
 
-// ==========================================================
-// ৩. (নতুন) SVG থেকে EPS এ কনভার্ট এবং মেটাডেটা এম্বেড (Inkscape)
-// ==========================================================
+// ৩. SVG থেকে EPS এ কনভার্ট এবং মেটাডেটা এম্বেড (Inkscape)
 app.post('/api/convert-svg-to-eps', upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
@@ -124,17 +109,64 @@ app.post('/api/convert-svg-to-eps', upload.single('file'), (req, res) => {
     const epsFilePath = req.file.path + '_converted.eps';
     const { title, description, keywords } = req.body;
 
-    // Inkscape কমান্ড দিয়ে SVG থেকে Vector EPS কনভার্ট
-    const convertCmd = `inkscape "${svgFilePath}" --export-filename="${epsFilePath}" --export-type=eps`;
+    // FIX 1: --export-area-drawing ব্যবহার করা হয়েছে যাতে আর্টবোর্ড একদম ডিজাইনের মাপে ফিট হয়ে যায়
+    const convertCmd = `inkscape "${svgFilePath}" --export-area-drawing --export-filename="${epsFilePath}" --export-type=eps`;
 
     exec(convertCmd, (error, stdout, stderr) => {
-        // অরিজিনাল SVG ডিলিট
         if (fs.existsSync(svgFilePath)) fs.unlinkSync(svgFilePath);
 
         if (error) {
             console.error("Inkscape Error:", stderr || error.message);
             if (fs.existsSync(epsFilePath)) fs.unlinkSync(epsFilePath);
             return res.status(500).json({ error: "Failed to convert SVG to EPS. Ensure Inkscape is installed." });
+        }
+
+        // FIX 2: 4 Megapixels (4MP) Requirement পূরণ করার জন্য EPS ফাইলকে জুম/আপস্কেল করা হচ্ছে
+        try {
+            let epsData = fs.readFileSync(epsFilePath, 'utf8');
+            let bbRegex = /%%BoundingBox:\s+([-.\d]+)\s+([-.\d]+)\s+([-.\d]+)\s+([-.\d]+)/;
+            let match = epsData.match(bbRegex);
+
+            if (match) {
+                let llx = parseFloat(match[1]);
+                let lly = parseFloat(match[2]);
+                let urx = parseFloat(match[3]);
+                let ury = parseFloat(match[4]);
+                
+                let width = urx - llx;
+                let height = ury - lly;
+                let maxDim = Math.max(width, height);
+                
+                // যদি ফাইলের ডাইমেনশন 4500 পিক্সেলের কম হয়, তবে اسے 4500 এ আপস্কেল করা হবে
+                if (maxDim > 0 && maxDim < 4500) {
+                    let scale = 4500 / maxDim;
+                    
+                    let newLlx = Math.floor(llx * scale);
+                    let newLly = Math.floor(lly * scale);
+                    let newUrx = Math.ceil(urx * scale);
+                    let newUry = Math.ceil(ury * scale);
+                    
+                    epsData = epsData.replace(bbRegex, `%%BoundingBox: ${newLlx} ${newLly} ${newUrx} ${newUry}`);
+                    
+                    let hrRegex = /%%HiResBoundingBox:\s+([-.\d]+)\s+([-.\d]+)\s+([-.\d]+)\s+([-.\d]+)/;
+                    if (epsData.match(hrRegex)) {
+                        epsData = epsData.replace(hrRegex, (m, p1, p2, p3, p4) => {
+                            return `%%HiResBoundingBox: ${(parseFloat(p1)*scale).toFixed(4)} ${(parseFloat(p2)*scale).toFixed(4)} ${(parseFloat(p3)*scale).toFixed(4)} ${(parseFloat(p4)*scale).toFixed(4)}`;
+                        });
+                    }
+                    
+                    // PostScript-এর ভেতরে ভেক্টরগুলোকে বড় করার কমান্ড যুক্ত করা
+                    if (epsData.includes('%%Page: 1 1')) {
+                        epsData = epsData.replace(/(%%Page:\s+1\s+1\r?\n)/, `$1${scale.toFixed(4)} ${scale.toFixed(4)} scale\n`);
+                    } else if (epsData.includes('%%EndSetup')) {
+                        epsData = epsData.replace(/(%%EndSetup\r?\n)/, `$1${scale.toFixed(4)} ${scale.toFixed(4)} scale\n`);
+                    }
+                    
+                    fs.writeFileSync(epsFilePath, epsData, 'utf8');
+                }
+            }
+        } catch (scaleErr) {
+            console.error("Error upscaling EPS:", scaleErr);
         }
 
         // Exiftool দিয়ে নতুন তৈরি হওয়া EPS ফাইলে মেটাডেটা এম্বেড
@@ -171,7 +203,6 @@ app.post('/api/convert-svg-to-eps', upload.single('file'), (req, res) => {
                 return res.status(500).json({ error: "Failed to embed metadata in converted EPS." });
             }
 
-            // ফ্রন্টএন্ডে ফাইনাল EPS ডাউনলোড করতে পাঠানো
             const originalNameWithoutExt = req.file.originalname.replace(/\.[^/.]+$/, "");
             res.download(epsFilePath, `${originalNameWithoutExt}_meta.eps`, (err) => {
                 if (fs.existsSync(epsFilePath)) fs.unlinkSync(epsFilePath);
