@@ -1,7 +1,7 @@
 FROM node:18-alpine
 
-# Ghostscript, Exiftool এবং প্রয়োজনীয় ফন্ট ইন্সটল করা হচ্ছে
-RUN apk add --no-cache ghostscript ghostscript-fonts exiftool
+# perl এবং exiftool নিশ্চিত করা হচ্ছে
+RUN apk add --no-cache ghostscript ghostscript-fonts exiftool perl
 
 WORKDIR /app
 
@@ -10,7 +10,9 @@ RUN npm install
 
 COPY . .
 
+# আপলোড ফোল্ডার তৈরি এবং পারমিশন
+RUN mkdir -p uploads && chmod 777 uploads
+
 EXPOSE 3000
 
-# এখানে CMD এর পরে একটি স্পেস দিতে হবে
 CMD ["node", "server.js"]
