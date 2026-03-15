@@ -65,66 +65,31 @@ app.post('/api/embed-eps', upload.single('file'), (req, res) => {
     
     const { title, description, keywords } = req.body;
 
-    // একটি XMP ফাইল তৈরি করার লজিক
-    const xmpFilePath = req.file.path + '.xmp';
-
-    function escapeXml(unsafe) {
-        return (unsafe || '').replace(/[<>&'"]/g, function (c) {
-            switch (c) {
-                case '<': return '&lt;';
-                case '>': return '&gt;';
-                case '&': return '&amp;';
-                case '\'': return '&apos;';
-                case '"': return '&quot;';
-            }
-        });
-    }
-
-    const keywordsList = (keywords || '').split(',').filter(k => k.trim()).map(k => `<rdf:li>${escapeXml(k.trim())}</rdf:li>`).join('\n            ');
-
-    // Adobe Illustrator এবং Stock এর জন্য সঠিক XMP ফরম্যাট
-    const xmpContent = `<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
-<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="MetaGen Pro">
-  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-    <rdf:Description rdf:about=""
-        xmlns:dc="http://purl.org/dc/elements/1.1/"
-        xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/">
-      <dc:title>
-        <rdf:Alt>
-          <rdf:li xml:lang="x-default">${escapeXml(title)}</rdf:li>
-        </rdf:Alt>
-      </dc:title>
-      <dc:description>
-        <rdf:Alt>
-          <rdf:li xml:lang="x-default">${escapeXml(description)}</rdf:li>
-        </rdf:Alt>
-      </dc:description>
-      <dc:subject>
-        <rdf:Bag>
-            ${keywordsList}
-        </rdf:Bag>
-      </dc:subject>
-      <photoshop:Headline>${escapeXml(title)}</photoshop:Headline>
-    </rdf:Description>
-  </rdf:RDF>
-</x:xmpmeta>
-<?xpacket end="w"?>`;
-
-    fs.writeFileSync(xmpFilePath, xmpContent, 'utf8');
-
-    // ExifTool কমান্ড: পুরো XMP ব্লকটি EPS ফাইলে পুশ করা হচ্ছে
+    // ExifTool কমান্ড: XMP এবং IPTC উভয় ফরম্যাটেই ডেটা এম্বেড করা হচ্ছে
     const args =[
         '-overwrite_original',
-        `-xmp<=${xmpFilePath}`,
+        
+        // --- Title Tags ---
+        `-Title=${title || ''}`,
+        `-XMP-dc:Title=${title || ''}`,
+        `-XMP-photoshop:Headline=${title || ''}`,
+        `-IPTC:ObjectName=${title || ''}`,
+        
+        // --- Description Tags ---
+        `-Description=${description || ''}`,
+        `-XMP-dc:Description=${description || ''}`,
+        `-IPTC:Caption-Abstract=${description || ''}`,
+        
+        // --- Keywords Tags ---
+        '-sep', ', ',
+        `-Keywords=${keywords || ''}`,
+        `-XMP-dc:Subject=${keywords || ''}`,
+        `-IPTC:Keywords=${keywords || ''}`,
+        
         epsFilePath
     ];
 
-    const { execFile } = require('child_process');
-
     execFile('exiftool', args, (error, stdout, stderr) => {
-        // কাজ শেষে XMP টেম্পলেট ফাইলটি ডিলিট করে দেওয়া
-        if (fs.existsSync(xmpFilePath)) fs.unlinkSync(xmpFilePath);
-
         if (error) {
             console.error("ExifTool Error:", stderr || error.message);
             if (fs.existsSync(epsFilePath)) fs.unlinkSync(epsFilePath);
