@@ -51,7 +51,7 @@ app.post('/api/extract-eps', upload.single('file'), (req, res) => {
     });
 });
 
-// ১. স্পেশাল ক্যারেক্টার হ্যান্ডেল করার জন্য এই ফাংশনটি সবার উপরে (রাউটের বাইরে) রাখতে পারেন
+// ১. সবার উপরে (রাউটের বাইরে) এই ফাংশনটি যোগ করুন (যদি আগে না থাকে)
 const escapeXml = (unsafe) => {
     if (!unsafe) return "";
     return unsafe.toString().replace(/[<>&"']/g, (c) => {
@@ -66,24 +66,25 @@ const escapeXml = (unsafe) => {
     });
 };
 
-// ২. মেটাডাটা এমবেড করার মূল রাউট
+// ২. মেটাডাটা এমবেড করার সঠিক রাউট
 app.post('/api/embed-metadata', upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
     const { title, description, keywords } = req.body;
     const epsFilePath = req.file.path + '.eps';
     
-    // ফাইল রিনেম করা
+    // ফাইল প্রসেসিং শুরু
     try {
         fs.renameSync(req.file.path, epsFilePath);
     } catch (err) {
-        return res.status(500).json({ error: "File processing error" });
+        console.error("Rename Error:", err);
+        return res.status(500).json({ error: "File system error" });
     }
 
-    // কিউওয়ার্ডস অ্যারে তৈরি (এখানেই ভুল হচ্ছিল হয়তো)
+    // keywordsArray ডিফাইন করা হচ্ছে (যা আপনার কোডে মিসিং ছিল)
     const keywordsArray = keywords ? keywords.split(',').map(k => k.trim()).filter(k => k !== "") : [];
 
-    // এক্সএমপি প্যাকেট তৈরি
+    // XMP ডেটা তৈরি
     const xmpData = `<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/">
  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
@@ -91,14 +92,14 @@ app.post('/api/embed-metadata', upload.single('file'), (req, res) => {
     xmlns:dc="http://purl.org/dc/elements/1.1/"
     xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"
     xmlns:xmp="http://ns.adobe.com/xap/1.0/">
-   <dc:title><rdf:Alt><rdf:li xml:lang="x-default">${escapeXml(title)}</rdf:li></rdf:Alt></dc:title>
-   <dc:description><rdf:Alt><rdf:li xml:lang="x-default">${escapeXml(description)}</rdf:li></rdf:Alt></dc:description>
+   <dc:title><rdf:Alt><rdf:li xml:lang="x-default">${escapeXml(title || "")}</rdf:li></rdf:Alt></dc:title>
+   <dc:description><rdf:Alt><rdf:li xml:lang="x-default">${escapeXml(description || "")}</rdf:li></rdf:Alt></dc:description>
    <dc:subject>
     <rdf:Bag>
      ${keywordsArray.map(k => `<rdf:li>${escapeXml(k)}</rdf:li>`).join('\n')}
     </rdf:Bag>
    </dc:subject>
-   <photoshop:Headline>${escapeXml(title)}</photoshop:Headline>
+   <photoshop:Headline>${escapeXml(title || "")}</photoshop:Headline>
   </rdf:Description>
  </rdf:RDF>
 </x:xmpmeta>
@@ -124,13 +125,13 @@ app.post('/api/embed-metadata', upload.single('file'), (req, res) => {
         if (fs.existsSync(xmpFilePath)) fs.unlinkSync(xmpFilePath);
 
         if (error) {
-            console.error("ExifTool Error:", stderr);
+            console.error("ExifTool Error:", stderr || error.message);
             if (fs.existsSync(epsFilePath)) fs.unlinkSync(epsFilePath);
-            return res.status(500).json({ error: "Failed to embed metadata." });
+            return res.status(500).json({ error: "ExifTool failed to write metadata." });
         }
 
-        // ফাইল ডাউনলোড শেষে ডিলিট
-        res.download(epsFilePath, `metagen_${req.file.originalname}`, (err) => {
+        // সফল হলে ফাইল পাঠানো
+        res.download(epsFilePath, `metagen_${req.file.originalname}.eps`, (err) => {
             if (fs.existsSync(epsFilePath)) fs.unlinkSync(epsFilePath);
         });
     });
