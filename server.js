@@ -64,18 +64,33 @@ app.post('/api/embed-eps', upload.single('file'), (req, res) => {
     
     const { title, description, keywords } = req.body;
 
-    // ExifTool কমান্ড: XMP এবং IPTC উভয় ফরম্যাটেই ডেটা এম্বেড করা হচ্ছে
+    // ExifTool কমান্ড: Adobe Illustrator-এর জন্য সঠিক ট্যাগ ও এনকোডিং
     const args =[
         '-overwrite_original',
-        `-XMP-dc:Title=${title || ''}`,
-        `-XMP-dc:Description=${description || ''}`,
-        '-sep', ', ',
-        `-XMP-dc:Subject=${keywords || ''}`,
-        `-IPTC:ObjectName=${title || ''}`,
-        `-IPTC:Caption-Abstract=${description || ''}`,
-        `-IPTC:Keywords=${keywords || ''}`,
-        epsFilePath
+        '-charset', 'utf8' // স্পেশাল ক্যারেক্টার ঠিক রাখার জন্য
     ];
+
+    // Document Title
+    if (title) {
+        args.push(`-XMP-dc:Title=${title}`);
+        args.push(`-XMP-photoshop:Headline=${title}`);
+        args.push(`-IPTC:ObjectName=${title}`);
+    }
+
+    // Description
+    if (description) {
+        args.push(`-XMP-dc:Description=${description}`);
+        args.push(`-IPTC:Caption-Abstract=${description}`);
+    }
+
+    // Keywords
+    if (keywords) {
+        args.push('-sep', ','); // কমা দিয়ে কিওয়ার্ডগুলোকে আলাদা অ্যারে (List) হিসেবে সেট করার জন্য
+        args.push(`-XMP-dc:Subject=${keywords}`);
+        args.push(`-IPTC:Keywords=${keywords}`);
+    }
+
+    args.push(epsFilePath);
 
     execFile('exiftool', args, (error, stdout, stderr) => {
         if (error) {
