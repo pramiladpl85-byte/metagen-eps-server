@@ -43,7 +43,6 @@ app.post('/api/extract-eps', upload.single('file'), (req, res) => {
         try {
             const jpegBuffer = fs.readFileSync(jpgFilePath);
             
-            // কাজ শেষে ফাইল ডিলিট
             fs.unlinkSync(epsFilePath);
             fs.unlinkSync(jpgFilePath);
             
