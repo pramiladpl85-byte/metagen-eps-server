@@ -19,11 +19,12 @@ if (!fs.existsSync(uploadDir)) {
 
 const upload = multer({ dest: 'uploads/' });
 
+// ==========================================================
 // ১. EPS প্রিভিউ জেনারেট করার API (Ghostscript দিয়ে)
+// ==========================================================
 app.post('/api/extract-eps', upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
-    // Multer এক্সটেনশন ছাড়া ফাইল সেভ করে, তাই আমরা ফাইলের শেষে .eps যুক্ত করে নিচ্ছি
     const epsFilePath = req.file.path + '.eps';
     fs.renameSync(req.file.path, epsFilePath);
     
@@ -56,7 +57,9 @@ app.post('/api/extract-eps', upload.single('file'), (req, res) => {
     });
 });
 
+// ==========================================================
 // ২. EPS ফাইলে মেটাডেটা এম্বেড করার API (ExifTool দিয়ে)
+// ==========================================================
 app.post('/api/embed-eps', upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
@@ -68,6 +71,9 @@ app.post('/api/embed-eps', upload.single('file'), (req, res) => {
     // ExifTool কমান্ড: XMP এবং IPTC উভয় ফরম্যাটেই ডেটা এম্বেড করা হচ্ছে
     const args =[
         '-overwrite_original',
+        '-charset', 'utf8',
+        '-charset', 'iptc=utf8',
+        '-codedcharacterset=utf8',
         
         // --- Title Tags ---
         `-Title=${title || ''}`,
@@ -78,16 +84,19 @@ app.post('/api/embed-eps', upload.single('file'), (req, res) => {
         // --- Description Tags ---
         `-Description=${description || ''}`,
         `-XMP-dc:Description=${description || ''}`,
-        `-IPTC:Caption-Abstract=${description || ''}`,
-        
-        // --- Keywords Tags ---
-        '-sep', ', ',
-        `-Keywords=${keywords || ''}`,
-        `-XMP-dc:Subject=${keywords || ''}`,
-        `-IPTC:Keywords=${keywords || ''}`,
-        
-        epsFilePath
+        `-IPTC:Caption-Abstract=${description || ''}`
     ];
+
+    // --- Keywords Tags ---
+    if (keywords) {
+        const cleanKeywords = keywords.split(',').map(k => k.trim()).filter(Boolean).join(',');
+        args.push('-sep', ',');
+        args.push(`-Keywords=${cleanKeywords}`);
+        args.push(`-XMP-dc:Subject=${cleanKeywords}`);
+        args.push(`-IPTC:Keywords=${cleanKeywords}`);
+    }
+        
+    args.push(epsFilePath);
 
     execFile('exiftool', args, (error, stdout, stderr) => {
         if (error) {
@@ -99,6 +108,74 @@ app.post('/api/embed-eps', upload.single('file'), (req, res) => {
         // ফ্রন্টএন্ডে ফাইল ডাউনলোড করতে পাঠানো
         res.download(epsFilePath, req.file.originalname, (err) => {
             if (fs.existsSync(epsFilePath)) fs.unlinkSync(epsFilePath); // কাজ শেষে ডিলিট
+        });
+    });
+});
+
+// ==========================================================
+// ৩. (নতুন) SVG থেকে EPS এ কনভার্ট এবং মেটাডেটা এম্বেড (Inkscape)
+// ==========================================================
+app.post('/api/convert-svg-to-eps', upload.single('file'), (req, res) => {
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+
+    const svgFilePath = req.file.path + '.svg';
+    fs.renameSync(req.file.path, svgFilePath);
+    
+    const epsFilePath = req.file.path + '_converted.eps';
+    const { title, description, keywords } = req.body;
+
+    // Inkscape কমান্ড দিয়ে SVG থেকে Vector EPS কনভার্ট
+    const convertCmd = `inkscape "${svgFilePath}" --export-filename="${epsFilePath}" --export-type=eps`;
+
+    exec(convertCmd, (error, stdout, stderr) => {
+        // অরিজিনাল SVG ডিলিট
+        if (fs.existsSync(svgFilePath)) fs.unlinkSync(svgFilePath);
+
+        if (error) {
+            console.error("Inkscape Error:", stderr || error.message);
+            if (fs.existsSync(epsFilePath)) fs.unlinkSync(epsFilePath);
+            return res.status(500).json({ error: "Failed to convert SVG to EPS. Ensure Inkscape is installed." });
+        }
+
+        // Exiftool দিয়ে নতুন তৈরি হওয়া EPS ফাইলে মেটাডেটা এম্বেড
+        const args =[
+            '-overwrite_original',
+            '-charset', 'utf8',
+            '-charset', 'iptc=utf8',
+            '-codedcharacterset=utf8',
+            
+            `-Title=${title || ''}`,
+            `-XMP-dc:Title=${title || ''}`,
+            `-XMP-photoshop:Headline=${title || ''}`,
+            `-IPTC:ObjectName=${title || ''}`,
+            
+            `-Description=${description || ''}`,
+            `-XMP-dc:Description=${description || ''}`,
+            `-IPTC:Caption-Abstract=${description || ''}`
+        ];
+
+        if (keywords) {
+            const cleanKeywords = keywords.split(',').map(k => k.trim()).filter(Boolean).join(',');
+            args.push('-sep', ',');
+            args.push(`-Keywords=${cleanKeywords}`);
+            args.push(`-XMP-dc:Subject=${cleanKeywords}`);
+            args.push(`-IPTC:Keywords=${cleanKeywords}`);
+        }
+
+        args.push(epsFilePath);
+
+        execFile('exiftool', args, (exifError, exifStdout, exifStderr) => {
+            if (exifError) {
+                console.error("ExifTool Error (Post-Convert):", exifStderr || exifError.message);
+                if (fs.existsSync(epsFilePath)) fs.unlinkSync(epsFilePath);
+                return res.status(500).json({ error: "Failed to embed metadata in converted EPS." });
+            }
+
+            // ফ্রন্টএন্ডে ফাইনাল EPS ডাউনলোড করতে পাঠানো
+            const originalNameWithoutExt = req.file.originalname.replace(/\.[^/.]+$/, "");
+            res.download(epsFilePath, `${originalNameWithoutExt}_meta.eps`, (err) => {
+                if (fs.existsSync(epsFilePath)) fs.unlinkSync(epsFilePath);
+            });
         });
     });
 });
