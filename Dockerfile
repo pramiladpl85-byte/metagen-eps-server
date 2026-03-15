@@ -1,7 +1,7 @@
 FROM node:18-alpine
 
-# ExifTool এবং Ghostscript দুটোই ইন্সটল করা
-RUN apk add --no-cache ghostscript exiftool
+# Ghostscript, Exiftool এবং প্রয়োজনীয় ফন্ট ইন্সটল করা হচ্ছে
+RUN apk add --no-cache ghostscript ghostscript-fonts exiftool
 
 WORKDIR /app
 
@@ -12,4 +12,4 @@ COPY . .
 
 EXPOSE 3000
 
-CMD ["node", "server.js"]
+CMD["node", "server.js"]
