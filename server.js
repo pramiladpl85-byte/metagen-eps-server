@@ -4,6 +4,8 @@ const { exec, execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const cors = require('cors');
+const ftp = require("basic-ftp");
+const SftpClient = require("ssh2-sftp-client");
 
 const app = express();
 
@@ -167,6 +169,61 @@ app.post('/api/convert-svg-to-eps', upload.single('file'), (req, res) => {
             });
         });
     });
+});
+
+// ৪. FTP/SFTP আপলোড API
+app.post('/api/ftp-upload', upload.single('file'), async (req, res) => {
+    if (!req.file) return res.status(400).json({ success: false, message: "No file uploaded" });
+
+    const { host, user, pass } = req.body;
+    const localFilePath = req.file.path;
+    const remoteFileName = req.file.originalname;
+
+    // Adobe Stock সাধারণত SFTP ব্যবহার করে (Port 22), বাকিরা FTP (Port 21)
+    const isSFTP = host.includes("adobestock") || host.includes("contributor.adobestock.com") || host.includes("sftp");
+
+    if (isSFTP) {
+        // --- SFTP আপলোড লজিক (Adobe Stock এর জন্য) ---
+        const sftp = new SftpClient();
+        try {
+            await sftp.connect({
+                host: host.replace('sftp://', ''),
+                port: 22,
+                username: user,
+                password: pass,
+            });
+            await sftp.put(localFilePath, remoteFileName);
+            await sftp.end();
+            
+            if (fs.existsSync(localFilePath)) fs.unlinkSync(localFilePath);
+            res.json({ success: true, message: `Successfully uploaded ${remoteFileName} to ${host} via SFTP` });
+        } catch (err) {
+            console.error("SFTP Error:", err.message);
+            if (fs.existsSync(localFilePath)) fs.unlinkSync(localFilePath);
+            res.status(500).json({ success: false, message: "SFTP Upload Failed: " + err.message });
+        }
+    } else {
+        // --- স্ট্যান্ডার্ড FTP আপলোড লজিক (Shutterstock, Freepik এর জন্য) ---
+        const client = new ftp.Client();
+        client.ftp.verbose = false;
+        try {
+            await client.access({
+                host: host.replace('ftp://', ''),
+                user: user,
+                password: pass,
+                secure: false // মাইক্রোস্টক সাইটগুলো সাধারণত প্লেইন FTP ব্যবহার করে
+            });
+            await client.uploadFrom(localFilePath, remoteFileName);
+            client.close();
+
+            if (fs.existsSync(localFilePath)) fs.unlinkSync(localFilePath);
+            res.json({ success: true, message: `Successfully uploaded ${remoteFileName} to ${host} via FTP` });
+        } catch (err) {
+            console.error("FTP Error:", err.message);
+            if (fs.existsSync(localFilePath)) fs.unlinkSync(localFilePath);
+            res.status(500).json({ success: false, message: "FTP Upload Failed: " + err.message });
+        }
+    }
 });
 
 const PORT = process.env.PORT || 3000;
