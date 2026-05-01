@@ -9,7 +9,7 @@ const SftpClient = require("ssh2-sftp-client");
 
 const app = express();
 
-// CORS — সব অরিজিন এবং GET/POST দুটোই অনুমতি
+// CORS
 app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'OPTIONS']
@@ -20,13 +20,13 @@ if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir);
 }
 
-// ফাইল সাইজ লিমিট: সর্বোচ্চ ৫০ MB
+// File size limit: max 50 MB
 const upload = multer({
     dest: 'uploads/',
     limits: { fileSize: 50 * 1024 * 1024 }
 });
 
-// ১. EPS প্রিভিউ জেনারেট করার API (Ghostscript দিয়ে)
+// 1. EPS Preview (Ghostscript)
 app.post('/api/extract-eps', upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
@@ -47,11 +47,8 @@ app.post('/api/extract-eps', upload.single('file'), (req, res) => {
 
         try {
             const jpegBuffer = fs.readFileSync(jpgFilePath);
-            
-            // কাজ শেষে ফাইল ডিলিট
             fs.unlinkSync(epsFilePath);
             fs.unlinkSync(jpgFilePath);
-            
             res.json({ success: true, mimeType: "image/jpeg", base64: jpegBuffer.toString('base64') });
         } catch (err) {
             if (fs.existsSync(epsFilePath)) fs.unlinkSync(epsFilePath);
@@ -61,7 +58,7 @@ app.post('/api/extract-eps', upload.single('file'), (req, res) => {
     });
 });
 
-// ২. EPS ফাইলে মেটাডেটা এম্বেড করার API (ExifTool দিয়ে)
+// 2. EPS Metadata Embed (ExifTool)
 app.post('/api/embed-eps', upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
@@ -70,17 +67,15 @@ app.post('/api/embed-eps', upload.single('file'), (req, res) => {
     
     const { title, description, keywords } = req.body;
 
-    const args =[
+    const args = [
         '-overwrite_original',
         '-charset', 'utf8',
         '-charset', 'iptc=utf8',
         '-codedcharacterset=utf8',
-        
         `-Title=${title || ''}`,
         `-XMP-dc:Title=${title || ''}`,
         `-XMP-photoshop:Headline=${title || ''}`,
         `-IPTC:ObjectName=${title || ''}`,
-        
         `-Description=${description || ''}`,
         `-XMP-dc:Description=${description || ''}`,
         `-IPTC:Caption-Abstract=${description || ''}`
@@ -109,7 +104,7 @@ app.post('/api/embed-eps', upload.single('file'), (req, res) => {
     });
 });
 
-// ৩. SVG থেকে EPS এ কনভার্ট এবং মেটাডেটা এম্বেড (Inkscape)
+// 3. SVG to EPS Convert + Metadata (Inkscape + ExifTool)
 app.post('/api/convert-svg-to-eps', upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
@@ -119,12 +114,9 @@ app.post('/api/convert-svg-to-eps', upload.single('file'), (req, res) => {
     const epsFilePath = req.file.path + '_converted.eps';
     const { title, description, keywords } = req.body;
 
-    // FIX: --export-area-page ব্যবহার করা হয়েছে। 
-    // এটি অরিজিনাল SVG এর আর্টবোর্ড সাইজ (যেমন: 4000x4000) হুবহু বজায় রাখবে। কোনো এক্সট্রা স্কেলিং বা সাইজ বড় করবে না।
     const convertCmd = `inkscape "${svgFilePath}" --export-area-page --export-filename="${epsFilePath}" --export-type=eps`;
 
     exec(convertCmd, (error, stdout, stderr) => {
-        // অরিজিনাল SVG ডিলিট
         if (fs.existsSync(svgFilePath)) fs.unlinkSync(svgFilePath);
 
         if (error) {
@@ -133,18 +125,15 @@ app.post('/api/convert-svg-to-eps', upload.single('file'), (req, res) => {
             return res.status(500).json({ error: "Failed to convert SVG to EPS. Ensure Inkscape is installed." });
         }
 
-        // Exiftool দিয়ে নতুন তৈরি হওয়া EPS ফাইলে মেটাডেটা এম্বেড
-        const args =[
+        const args = [
             '-overwrite_original',
             '-charset', 'utf8',
             '-charset', 'iptc=utf8',
             '-codedcharacterset=utf8',
-            
             `-Title=${title || ''}`,
             `-XMP-dc:Title=${title || ''}`,
             `-XMP-photoshop:Headline=${title || ''}`,
             `-IPTC:ObjectName=${title || ''}`,
-            
             `-Description=${description || ''}`,
             `-XMP-dc:Description=${description || ''}`,
             `-IPTC:Caption-Abstract=${description || ''}`
@@ -167,7 +156,6 @@ app.post('/api/convert-svg-to-eps', upload.single('file'), (req, res) => {
                 return res.status(500).json({ error: "Failed to embed metadata in converted EPS." });
             }
 
-            // ফ্রন্টএন্ডে ফাইনাল EPS ডাউনলোড করতে পাঠানো
             const originalNameWithoutExt = req.file.originalname.replace(/\.[^/.]+$/, "");
             res.download(epsFilePath, `${originalNameWithoutExt}_meta.eps`, (err) => {
                 if (fs.existsSync(epsFilePath)) fs.unlinkSync(epsFilePath);
@@ -177,7 +165,7 @@ app.post('/api/convert-svg-to-eps', upload.single('file'), (req, res) => {
 });
 
 
-// ৪. FTP/SFTP আপলোড API — হোস্ট অনুযায়ী স্বয়ংক্রিয়ভাবে FTP বা SFTP নির্বাচন করবে
+// 4. FTP/SFTP Upload API - Auto-negotiates FTPS > FTP > SFTP
 app.post('/api/ftp-upload', upload.single('file'), async (req, res) => {
     const { host, user, pass, protocol } = req.body;
     const file = req.file;
@@ -186,15 +174,14 @@ app.post('/api/ftp-upload', upload.single('file'), async (req, res) => {
         return res.status(400).json({ success: false, error: "Missing required fields: file, host, user, pass" });
     }
 
-    const cleanHost = host.replace('sftp://', '').replace('ftp://', '').trim();
-    // ফ্রন্টএন্ড থেকে পাঠানো protocol ফিল্ড চেক করা, না থাকলে হোস্টনেম থেকে ডিটেক্ট
+    const cleanHost = host.replace('sftp://', '').replace('ftp://', '').replace('ftps://', '').trim();
     const isSftp = (protocol && protocol.toLowerCase() === 'sftp') || cleanHost.toLowerCase().includes('sftp');
 
-    console.log(`[FTP Upload] File: ${file.originalname} | Host: ${cleanHost} | Protocol: ${isSftp ? 'SFTP' : 'FTP'}`);
+    console.log(`[Upload] File: ${file.originalname} (${(file.size / 1024).toFixed(1)} KB) | Host: ${cleanHost} | Mode: ${isSftp ? 'SFTP' : 'FTP/FTPS'}`);
 
     try {
         if (isSftp) {
-            // ========== SFTP আপলোড (Adobe Stock ইত্যাদি) ==========
+            // ========== SFTP Upload (Adobe Stock etc.) ==========
             const sftp = new SftpClient();
             try {
                 await sftp.connect({
@@ -202,7 +189,7 @@ app.post('/api/ftp-upload', upload.single('file'), async (req, res) => {
                     port: 22,
                     username: user,
                     password: pass,
-                    readyTimeout: 30000,   // ৩০ সেকেন্ড কানেকশন টাইমআউট
+                    readyTimeout: 30000,
                     retries: 2
                 });
 
@@ -217,47 +204,85 @@ app.post('/api/ftp-upload', upload.single('file'), async (req, res) => {
             }
 
         } else {
-            // ========== FTP আপলোড (Shutterstock, Freepik ইত্যাদি) ==========
-            const client = new ftp.Client();
-            client.ftp.verbose = false;
+            // ========== FTP/FTPS Upload (Shutterstock, Freepik, Vecteezy etc.) ==========
+            // Strategy: Try FTPS (Explicit TLS) first, fallback to plain FTP
+            let uploaded = false;
+            let lastError = null;
 
+            // ---- Step 1: FTPS (Explicit TLS on port 21) ----
+            console.log(`[FTP] Step 1: Trying FTPS (Explicit TLS) to ${cleanHost}...`);
+            const ftpsClient = new ftp.Client();
+            ftpsClient.ftp.verbose = false;
             try {
-                await client.access({
+                await ftpsClient.access({
                     host: cleanHost,
                     user: user,
                     password: pass,
-                    secure: false,
+                    secure: true,
                     secureOptions: { rejectUnauthorized: false }
                 });
-
-                // কানেকশন টাইমআউট ৬০ সেকেন্ড
-                client.ftp.socket.setTimeout(60000);
-
-                await client.uploadFrom(file.path, file.originalname);
-                console.log(`[FTP] Upload successful: ${file.originalname}`);
-                res.json({ success: true, message: `File '${file.originalname}' uploaded via FTP to ${cleanHost}` });
-            } catch (ftpErr) {
-                console.error(`[FTP Error] ${cleanHost}:`, ftpErr.message);
-                res.status(500).json({ success: false, error: "FTP Error: " + ftpErr.message });
+                ftpsClient.ftp.socket.setTimeout(120000);
+                await ftpsClient.uploadFrom(file.path, file.originalname);
+                console.log(`[FTPS] Upload successful: ${file.originalname}`);
+                res.json({ success: true, message: `File '${file.originalname}' uploaded via FTPS to ${cleanHost}` });
+                uploaded = true;
+            } catch (ftpsErr) {
+                lastError = ftpsErr;
+                console.warn(`[FTPS] TLS failed for ${cleanHost}: ${ftpsErr.message}`);
             } finally {
-                client.close();
+                ftpsClient.close();
+            }
+
+            // ---- Step 2: Plain FTP fallback ----
+            if (!uploaded) {
+                console.log(`[FTP] Step 2: Falling back to plain FTP for ${cleanHost}...`);
+                const plainClient = new ftp.Client();
+                plainClient.ftp.verbose = false;
+                try {
+                    await plainClient.access({
+                        host: cleanHost,
+                        user: user,
+                        password: pass,
+                        secure: false
+                    });
+                    plainClient.ftp.socket.setTimeout(120000);
+                    await plainClient.uploadFrom(file.path, file.originalname);
+                    console.log(`[FTP] Upload successful (plain): ${file.originalname}`);
+                    res.json({ success: true, message: `File '${file.originalname}' uploaded via FTP to ${cleanHost}` });
+                    uploaded = true;
+                } catch (plainErr) {
+                    lastError = plainErr;
+                    console.error(`[FTP] Plain FTP also failed for ${cleanHost}: ${plainErr.message}`);
+                } finally {
+                    plainClient.close();
+                }
+            }
+
+            // ---- Both steps failed ----
+            if (!uploaded) {
+                const errMsg = lastError ? lastError.message : "Unknown FTP error";
+                res.status(500).json({ success: false, error: "FTP Connection Failed: " + errMsg + ". Please verify your credentials and host address." });
             }
         }
     } catch (err) {
         console.error(`[Upload Fatal Error]:`, err.message);
         res.status(500).json({ success: false, error: "Upload Error: " + err.message });
     } finally {
-        // কাজ শেষে লোকাল ফাইল ডিলিট
-        if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+        // Cleanup temp file
+        try {
+            if (file && file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+        } catch (cleanupErr) {
+            console.warn("[Cleanup] Warning:", cleanupErr.message);
+        }
     }
 });
 
-// ৫. হেলথ চেক API (Render এর জন্য)
+// 5. Health Check API
 app.get('/health', (req, res) => {
-    res.json({ status: 'ok', service: 'MetaGen Render Server' });
+    res.json({ status: 'ok', service: 'MetaGen Render Server', timestamp: new Date().toISOString() });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    console.log(`MetaGen Render Server running on port ${PORT}`);
 });
