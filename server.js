@@ -167,7 +167,7 @@ app.post('/api/convert-svg-to-eps', upload.single('file'), (req, res) => {
 
 // 4. FTP/SFTP Upload API - Auto-negotiates FTPS > FTP > SFTP
 app.post('/api/ftp-upload', upload.single('file'), async (req, res) => {
-    const { host, user, pass, protocol } = req.body;
+    const { host, user, pass, protocol, port } = req.body;
     const file = req.file;
 
     if (!file || !host || !user || !pass) {
@@ -176,8 +176,9 @@ app.post('/api/ftp-upload', upload.single('file'), async (req, res) => {
 
     const cleanHost = host.replace('sftp://', '').replace('ftp://', '').replace('ftps://', '').trim();
     const isSftp = (protocol && protocol.toLowerCase() === 'sftp') || cleanHost.toLowerCase().includes('sftp');
+    const customPort = port ? parseInt(port, 10) : null;
 
-    console.log(`[Upload] File: ${file.originalname} (${(file.size / 1024).toFixed(1)} KB) | Host: ${cleanHost} | Mode: ${isSftp ? 'SFTP' : 'FTP/FTPS'}`);
+    console.log(`[Upload] File: ${file.originalname} (${(file.size / 1024).toFixed(1)} KB) | Host: ${cleanHost} | Port: ${customPort || 'default'} | Mode: ${isSftp ? 'SFTP' : 'FTP/FTPS'}`);
 
     try {
         if (isSftp) {
@@ -186,7 +187,7 @@ app.post('/api/ftp-upload', upload.single('file'), async (req, res) => {
             try {
                 await sftp.connect({
                     host: cleanHost,
-                    port: 22,
+                    port: customPort || 22,
                     username: user,
                     password: pass,
                     readyTimeout: 30000,
