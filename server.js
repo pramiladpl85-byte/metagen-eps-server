@@ -9,9 +9,10 @@ const SftpClient = require("ssh2-sftp-client");
 
 const app = express();
 
+// CORS — সব অরিজিন এবং GET/POST দুটোই অনুমতি
 app.use(cors({
     origin: '*',
-    methods: ['POST', 'OPTIONS']
+    methods: ['GET', 'POST', 'OPTIONS']
 }));
 
 const uploadDir = path.join(__dirname, 'uploads');
@@ -19,7 +20,11 @@ if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir);
 }
 
-const upload = multer({ dest: 'uploads/' });
+// ফাইল সাইজ লিমিট: সর্বোচ্চ ৫০ MB
+const upload = multer({
+    dest: 'uploads/',
+    limits: { fileSize: 50 * 1024 * 1024 }
+});
 
 // ১. EPS প্রিভিউ জেনারেট করার API (Ghostscript দিয়ে)
 app.post('/api/extract-eps', upload.single('file'), (req, res) => {
@@ -171,59 +176,85 @@ app.post('/api/convert-svg-to-eps', upload.single('file'), (req, res) => {
     });
 });
 
-// ৪. FTP/SFTP আপলোড API
+
+// ৪. FTP/SFTP আপলোড API — হোস্ট অনুযায়ী স্বয়ংক্রিয়ভাবে FTP বা SFTP নির্বাচন করবে
 app.post('/api/ftp-upload', upload.single('file'), async (req, res) => {
-    if (!req.file) return res.status(400).json({ success: false, message: "No file uploaded" });
+    const { host, user, pass, protocol } = req.body;
+    const file = req.file;
 
-    const { host, user, pass } = req.body;
-    const localFilePath = req.file.path;
-    const remoteFileName = req.file.originalname;
-
-    // Adobe Stock সাধারণত SFTP ব্যবহার করে (Port 22), বাকিরা FTP (Port 21)
-    const isSFTP = host.includes("adobestock") || host.includes("contributor.adobestock.com") || host.includes("sftp");
-
-    if (isSFTP) {
-        // --- SFTP আপলোড লজিক (Adobe Stock এর জন্য) ---
-        const sftp = new SftpClient();
-        try {
-            await sftp.connect({
-                host: host.replace('sftp://', ''),
-                port: 22,
-                username: user,
-                password: pass,
-            });
-            await sftp.put(localFilePath, remoteFileName);
-            await sftp.end();
-            
-            if (fs.existsSync(localFilePath)) fs.unlinkSync(localFilePath);
-            res.json({ success: true, message: `Successfully uploaded ${remoteFileName} to ${host} via SFTP` });
-        } catch (err) {
-            console.error("SFTP Error:", err.message);
-            if (fs.existsSync(localFilePath)) fs.unlinkSync(localFilePath);
-            res.status(500).json({ success: false, message: "SFTP Upload Failed: " + err.message });
-        }
-    } else {
-        // --- স্ট্যান্ডার্ড FTP আপলোড লজিক (Shutterstock, Freepik এর জন্য) ---
-        const client = new ftp.Client();
-        client.ftp.verbose = false;
-        try {
-            await client.access({
-                host: host.replace('ftp://', ''),
-                user: user,
-                password: pass,
-                secure: false // মাইক্রোস্টক সাইটগুলো সাধারণত প্লেইন FTP ব্যবহার করে
-            });
-            await client.uploadFrom(localFilePath, remoteFileName);
-            client.close();
-
-            if (fs.existsSync(localFilePath)) fs.unlinkSync(localFilePath);
-            res.json({ success: true, message: `Successfully uploaded ${remoteFileName} to ${host} via FTP` });
-        } catch (err) {
-            console.error("FTP Error:", err.message);
-            if (fs.existsSync(localFilePath)) fs.unlinkSync(localFilePath);
-            res.status(500).json({ success: false, message: "FTP Upload Failed: " + err.message });
-        }
+    if (!file || !host || !user || !pass) {
+        return res.status(400).json({ success: false, error: "Missing required fields: file, host, user, pass" });
     }
+
+    const cleanHost = host.replace('sftp://', '').replace('ftp://', '').trim();
+    // ফ্রন্টএন্ড থেকে পাঠানো protocol ফিল্ড চেক করা, না থাকলে হোস্টনেম থেকে ডিটেক্ট
+    const isSftp = (protocol && protocol.toLowerCase() === 'sftp') || cleanHost.toLowerCase().includes('sftp');
+
+    console.log(`[FTP Upload] File: ${file.originalname} | Host: ${cleanHost} | Protocol: ${isSftp ? 'SFTP' : 'FTP'}`);
+
+    try {
+        if (isSftp) {
+            // ========== SFTP আপলোড (Adobe Stock ইত্যাদি) ==========
+            const sftp = new SftpClient();
+            try {
+                await sftp.connect({
+                    host: cleanHost,
+                    port: 22,
+                    username: user,
+                    password: pass,
+                    readyTimeout: 30000,   // ৩০ সেকেন্ড কানেকশন টাইমআউট
+                    retries: 2
+                });
+
+                await sftp.put(file.path, '/' + file.originalname);
+                console.log(`[SFTP] Upload successful: ${file.originalname}`);
+                res.json({ success: true, message: `File '${file.originalname}' uploaded via SFTP to ${cleanHost}` });
+            } catch (sftpErr) {
+                console.error(`[SFTP Error] ${cleanHost}:`, sftpErr.message);
+                res.status(500).json({ success: false, error: "SFTP Error: " + sftpErr.message });
+            } finally {
+                await sftp.end().catch(() => {});
+            }
+
+        } else {
+            // ========== FTP আপলোড (Shutterstock, Freepik ইত্যাদি) ==========
+            const client = new ftp.Client();
+            client.ftp.verbose = false;
+
+            try {
+                await client.access({
+                    host: cleanHost,
+                    user: user,
+                    password: pass,
+                    secure: false,
+                    secureOptions: { rejectUnauthorized: false }
+                });
+
+                // কানেকশন টাইমআউট ৬০ সেকেন্ড
+                client.ftp.socket.setTimeout(60000);
+
+                await client.uploadFrom(file.path, file.originalname);
+                console.log(`[FTP] Upload successful: ${file.originalname}`);
+                res.json({ success: true, message: `File '${file.originalname}' uploaded via FTP to ${cleanHost}` });
+            } catch (ftpErr) {
+                console.error(`[FTP Error] ${cleanHost}:`, ftpErr.message);
+                res.status(500).json({ success: false, error: "FTP Error: " + ftpErr.message });
+            } finally {
+                client.close();
+            }
+        }
+    } catch (err) {
+        console.error(`[Upload Fatal Error]:`, err.message);
+        res.status(500).json({ success: false, error: "Upload Error: " + err.message });
+    } finally {
+        // কাজ শেষে লোকাল ফাইল ডিলিট
+        if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    }
+});
+
+// ৫. হেলথ চেক API (Render এর জন্য)
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok', service: 'MetaGen Render Server' });
 });
 
 const PORT = process.env.PORT || 3000;
