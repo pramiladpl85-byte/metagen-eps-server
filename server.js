@@ -26,6 +26,13 @@ const upload = multer({
     limits: { fileSize: 50 * 1024 * 1024 }
 });
 
+// ==========================================
+// UptimeRobot Health Check Route (NEWLY ADDED)
+// ==========================================
+app.get('/', (req, res) => {
+    res.status(200).send('MetaGen EPS Server is Awake and Running Perfectly!');
+});
+
 // 1. EPS Preview (Ghostscript)
 app.post('/api/extract-eps', upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
