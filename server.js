@@ -27,38 +27,49 @@ const upload = multer({
 });
 
 // ==========================================
-// UptimeRobot Health Check Route (NEWLY ADDED)
+// UptimeRobot Health Check Route
 // ==========================================
 app.get('/', (req, res) => {
-    res.status(200).send('MetaGen EPS Server is Awake and Running Perfectly!');
+    res.status(200).send('MetaGen EPS & AI Server is Awake and Running Perfectly!');
 });
 
-// 1. EPS Preview (Ghostscript)
+// 1. EPS & AI Preview Generator (Ghostscript Engine - UPDATED FOR .AI SUPPORT)
 app.post('/api/extract-eps', upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
-    const epsFilePath = req.file.path + '.eps';
-    fs.renameSync(req.file.path, epsFilePath);
+    // ফাইলের অরিজিনাল এক্সটেনশন বের করা (.ai বা .eps)
+    const ext = path.extname(req.file.originalname).toLowerCase() || '.eps';
+    const inputFilePath = req.file.path + ext;
+    fs.renameSync(req.file.path, inputFilePath);
     
-    const jpgFilePath = `${epsFilePath}.jpg`;
+    const jpgFilePath = `${inputFilePath}.jpg`;
 
-    const cmd = `gs -q -dSAFER -dBATCH -dNOPAUSE -dEPSCrop -r100 -sDEVICE=jpeg -dJPEGQ=80 -dTextAlphaBits=4 -dGraphicsAlphaBits=4 -sOutputFile="${jpgFilePath}" "${epsFilePath}"`;
+    // .ai ফাইলের জন্য FirstPage রেন্ডারিং এবং .eps এর জন্য EPSCrop ব্যবহার হবে
+    const isAi = (ext === '.ai');
+    const cropOpt = isAi ? '-dFirstPage=1 -dLastPage=1 -dFitPage' : '-dEPSCrop';
+
+    const cmd = `gs -q -dSAFER -dBATCH -dNOPAUSE ${cropOpt} -r150 -sDEVICE=jpeg -dJPEGQ=85 -dTextAlphaBits=4 -dGraphicsAlphaBits=4 -sOutputFile="${jpgFilePath}" "${inputFilePath}"`;
 
     exec(cmd, (error, stdout, stderr) => {
         if (error) {
-            console.error("Ghostscript Error:", stderr || error.message);
-            if (fs.existsSync(epsFilePath)) fs.unlinkSync(epsFilePath);
+            console.error("Ghostscript Render Error:", stderr || error.message);
+            if (fs.existsSync(inputFilePath)) fs.unlinkSync(inputFilePath);
             if (fs.existsSync(jpgFilePath)) fs.unlinkSync(jpgFilePath);
-            return res.status(500).json({ error: "Failed to render EPS file.", details: stderr });
+            return res.status(500).json({ error: "Failed to render vector file.", details: stderr || error.message });
         }
 
         try {
             const jpegBuffer = fs.readFileSync(jpgFilePath);
-            fs.unlinkSync(epsFilePath);
-            fs.unlinkSync(jpgFilePath);
-            res.json({ success: true, mimeType: "image/jpeg", base64: jpegBuffer.toString('base64') });
+            if (fs.existsSync(inputFilePath)) fs.unlinkSync(inputFilePath);
+            if (fs.existsSync(jpgFilePath)) fs.unlinkSync(jpgFilePath);
+            
+            res.json({ 
+                success: true, 
+                mimeType: "image/jpeg", 
+                base64: jpegBuffer.toString('base64') 
+            });
         } catch (err) {
-            if (fs.existsSync(epsFilePath)) fs.unlinkSync(epsFilePath);
+            if (fs.existsSync(inputFilePath)) fs.unlinkSync(inputFilePath);
             if (fs.existsSync(jpgFilePath)) fs.unlinkSync(jpgFilePath);
             res.status(500).json({ error: "Failed to read converted image." });
         }
@@ -171,8 +182,7 @@ app.post('/api/convert-svg-to-eps', upload.single('file'), (req, res) => {
     });
 });
 
-
-// 4. FTP/SFTP Upload API - Auto-negotiates FTPS > FTP > SFTP
+// 4. FTP/SFTP Upload API
 app.post('/api/ftp-upload', upload.single('file'), async (req, res) => {
     const { host, user, pass, protocol, port } = req.body;
     const file = req.file;
@@ -189,7 +199,6 @@ app.post('/api/ftp-upload', upload.single('file'), async (req, res) => {
 
     try {
         if (isSftp) {
-            // ========== SFTP Upload (Adobe Stock etc.) ==========
             const sftp = new SftpClient();
             try {
                 await sftp.connect({
@@ -202,23 +211,18 @@ app.post('/api/ftp-upload', upload.single('file'), async (req, res) => {
                 });
 
                 await sftp.put(file.path, '/' + file.originalname);
-                console.log(`[SFTP] Upload successful: ${file.originalname}`);
                 res.json({ success: true, message: `File '${file.originalname}' uploaded via SFTP to ${cleanHost}` });
             } catch (sftpErr) {
-                console.error(`[SFTP Error] ${cleanHost}:`, sftpErr.message);
                 res.status(500).json({ success: false, error: "SFTP Error: " + sftpErr.message });
             } finally {
                 await sftp.end().catch(() => {});
             }
 
         } else {
-            // ========== FTP/FTPS Upload (Shutterstock, Freepik, Vecteezy etc.) ==========
-            // Strategy: Try FTPS (Explicit TLS) first, fallback to plain FTP
             let uploaded = false;
             let lastError = null;
 
-            // ---- Step 1: FTPS (Explicit TLS on port 21) ----
-            console.log(`[FTP] Step 1: Trying FTPS (Explicit TLS) to ${cleanHost}...`);
+            // Step 1: FTPS
             const ftpsClient = new ftp.Client();
             ftpsClient.ftp.verbose = false;
             try {
@@ -231,19 +235,16 @@ app.post('/api/ftp-upload', upload.single('file'), async (req, res) => {
                 });
                 ftpsClient.ftp.socket.setTimeout(120000);
                 await ftpsClient.uploadFrom(file.path, file.originalname);
-                console.log(`[FTPS] Upload successful: ${file.originalname}`);
                 res.json({ success: true, message: `File '${file.originalname}' uploaded via FTPS to ${cleanHost}` });
                 uploaded = true;
             } catch (ftpsErr) {
                 lastError = ftpsErr;
-                console.warn(`[FTPS] TLS failed for ${cleanHost}: ${ftpsErr.message}`);
             } finally {
                 ftpsClient.close();
             }
 
-            // ---- Step 2: Plain FTP fallback ----
+            // Step 2: Plain FTP
             if (!uploaded) {
-                console.log(`[FTP] Step 2: Falling back to plain FTP for ${cleanHost}...`);
                 const plainClient = new ftp.Client();
                 plainClient.ftp.verbose = false;
                 try {
@@ -255,33 +256,26 @@ app.post('/api/ftp-upload', upload.single('file'), async (req, res) => {
                     });
                     plainClient.ftp.socket.setTimeout(120000);
                     await plainClient.uploadFrom(file.path, file.originalname);
-                    console.log(`[FTP] Upload successful (plain): ${file.originalname}`);
                     res.json({ success: true, message: `File '${file.originalname}' uploaded via FTP to ${cleanHost}` });
                     uploaded = true;
                 } catch (plainErr) {
                     lastError = plainErr;
-                    console.error(`[FTP] Plain FTP also failed for ${cleanHost}: ${plainErr.message}`);
                 } finally {
                     plainClient.close();
                 }
             }
 
-            // ---- Both steps failed ----
             if (!uploaded) {
                 const errMsg = lastError ? lastError.message : "Unknown FTP error";
-                res.status(500).json({ success: false, error: "FTP Connection Failed: " + errMsg + ". Please verify your credentials and host address." });
+                res.status(500).json({ success: false, error: "FTP Connection Failed: " + errMsg });
             }
         }
     } catch (err) {
-        console.error(`[Upload Fatal Error]:`, err.message);
         res.status(500).json({ success: false, error: "Upload Error: " + err.message });
     } finally {
-        // Cleanup temp file
         try {
             if (file && file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
-        } catch (cleanupErr) {
-            console.warn("[Cleanup] Warning:", cleanupErr.message);
-        }
+        } catch (cleanupErr) {}
     }
 });
 
