@@ -33,46 +33,75 @@ app.get('/', (req, res) => {
     res.status(200).send('MetaGen EPS & AI Server is Awake and Running Perfectly!');
 });
 
-// 1. EPS & AI Preview Generator (Ghostscript Engine - UPDATED FOR .AI SUPPORT)
+// 1. EPS & AI Preview Generator (Ghostscript & ImageMagick Fallback)
 app.post('/api/extract-eps', upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
-    // ফাইলের অরিজিনাল এক্সটেনশন বের করা (.ai বা .eps)
+    // ফাইলের এক্সটেনশন বের করা (.ai বা .eps)
     const ext = path.extname(req.file.originalname).toLowerCase() || '.eps';
     const inputFilePath = req.file.path + ext;
     fs.renameSync(req.file.path, inputFilePath);
     
     const jpgFilePath = `${inputFilePath}.jpg`;
-
-    // .ai ফাইলের জন্য FirstPage রেন্ডারিং এবং .eps এর জন্য EPSCrop ব্যবহার হবে
     const isAi = (ext === '.ai');
-    const cropOpt = isAi ? '-dFirstPage=1 -dLastPage=1 -dFitPage' : '-dEPSCrop';
 
-    const cmd = `gs -q -dSAFER -dBATCH -dNOPAUSE ${cropOpt} -r150 -sDEVICE=jpeg -dJPEGQ=85 -dTextAlphaBits=4 -dGraphicsAlphaBits=4 -sOutputFile="${jpgFilePath}" "${inputFilePath}"`;
+    // ১. প্রথম কমান্ড: ভ্যালিড Ghostscript ফ্ল্যাগ (ভুল -dFitPage উঠিয়ে দেওয়া হয়েছে)
+    const gsCmd = isAi 
+        ? `gs -q -dSAFER -dBATCH -dNOPAUSE -dFirstPage=1 -dLastPage=1 -r150 -sDEVICE=jpeg -dJPEGQ=85 -dTextAlphaBits=4 -dGraphicsAlphaBits=4 -sOutputFile="${jpgFilePath}" "${inputFilePath}"`
+        : `gs -q -dSAFER -dBATCH -dNOPAUSE -dEPSCrop -r150 -sDEVICE=jpeg -dJPEGQ=85 -dTextAlphaBits=4 -dGraphicsAlphaBits=4 -sOutputFile="${jpgFilePath}" "${inputFilePath}"`;
 
-    exec(cmd, (error, stdout, stderr) => {
-        if (error) {
-            console.error("Ghostscript Render Error:", stderr || error.message);
-            if (fs.existsSync(inputFilePath)) fs.unlinkSync(inputFilePath);
-            if (fs.existsSync(jpgFilePath)) fs.unlinkSync(jpgFilePath);
-            return res.status(500).json({ error: "Failed to render vector file.", details: stderr || error.message });
-        }
+    // ২. ব্যাকআপ কমান্ড: ImageMagick (যদি Ghostscript কোনো AI ফাইলে ফেইল করে)
+    const convertCmd = `convert -density 150 "${inputFilePath}[0]" -background white -flatten -quality 85 "${jpgFilePath}"`;
 
+    const returnJpeg = () => {
         try {
             const jpegBuffer = fs.readFileSync(jpgFilePath);
-            if (fs.existsSync(inputFilePath)) fs.unlinkSync(inputFilePath);
-            if (fs.existsSync(jpgFilePath)) fs.unlinkSync(jpgFilePath);
-            
-            res.json({ 
+            cleanup();
+            return res.json({ 
                 success: true, 
                 mimeType: "image/jpeg", 
                 base64: jpegBuffer.toString('base64') 
             });
         } catch (err) {
-            if (fs.existsSync(inputFilePath)) fs.unlinkSync(inputFilePath);
-            if (fs.existsSync(jpgFilePath)) fs.unlinkSync(jpgFilePath);
-            res.status(500).json({ error: "Failed to read converted image." });
+            cleanup();
+            return res.status(500).json({ error: "Failed to read converted image." });
         }
+    };
+
+    const cleanup = () => {
+        if (fs.existsSync(inputFilePath)) fs.unlinkSync(inputFilePath);
+        if (fs.existsSync(jpgFilePath)) fs.unlinkSync(jpgFilePath);
+    };
+
+    // Step 1: Ghostscript রান করা
+    exec(gsCmd, (error) => {
+        if (!error && fs.existsSync(jpgFilePath) && fs.statSync(jpgFilePath).size > 0) {
+            return returnJpeg();
+        }
+
+        console.warn("[GS Fail] Ghostscript failed, trying ImageMagick fallback...");
+
+        // Step 2: Ghostscript ফেইল করলে ImageMagick রান করা
+        exec(convertCmd, (convErr) => {
+            if (!convErr && fs.existsSync(jpgFilePath) && fs.statSync(jpgFilePath).size > 0) {
+                return returnJpeg();
+            }
+
+            // Step 3: সিম্পল র‍্যাস্টারাইজেশন ব্যাকআপ
+            const simpleGsCmd = `gs -q -dSAFER -dBATCH -dNOPAUSE -r100 -sDEVICE=jpeg -dJPEGQ=80 -sOutputFile="${jpgFilePath}" "${inputFilePath}"`;
+            exec(simpleGsCmd, (simpleErr) => {
+                if (!simpleErr && fs.existsSync(jpgFilePath) && fs.statSync(jpgFilePath).size > 0) {
+                    return returnJpeg();
+                }
+
+                console.error("[All Renderers Failed]", convErr || simpleErr || error);
+                cleanup();
+                return res.status(500).json({ 
+                    error: "Failed to render vector/AI file.", 
+                    details: (error ? error.message : '') 
+                });
+            });
+        });
     });
 });
 
